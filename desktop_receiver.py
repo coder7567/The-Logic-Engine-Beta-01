@@ -18,7 +18,14 @@ OUTPUT_FILE = os.path.join(OUTPUT_DIR, "corpus_raw.jsonl")
 
 # Connect to Redis
 try:
-    r_client = redis.Redis(host=REDIS_HOST, port=REDIS_PORT, password=REDIS_PASSWORD, db=0)
+    r_client = redis.Redis(
+        host=REDIS_HOST, 
+        port=REDIS_PORT, 
+        password=REDIS_PASSWORD, 
+        db=0,
+        health_check_interval=30,
+        socket_keepalive=True
+    )
     r_client.ping()
     logging.info("Connected to Redis broker.")
 except Exception as e:
@@ -31,8 +38,8 @@ def listen_and_write():
         while True:
             try:
                 # BLPOP blocks until an item is available in the queue
-                # Returns a tuple: (queue_name, item)
-                result = r_client.blpop(REDIS_QUEUE_KEY, timeout=0)
+                # Use a bounded timeout instead of 0 to prevent dead sockets.
+                result = r_client.blpop(REDIS_QUEUE_KEY, timeout=10)
                 if result:
                     _, payload_bytes = result
                     payload_str = payload_bytes.decode('utf-8')
@@ -44,6 +51,12 @@ def listen_and_write():
                     f.write(json.dumps(data) + "\n")
                     f.flush()
                     logging.info(f"Wrote payload from {data.get('domain')} to disk.")
+            except redis.exceptions.TimeoutError:
+                # Safely loop on queue empty timeout
+                continue
+            except redis.exceptions.ConnectionError as ce:
+                logging.warning(f"Connection dropped, retrying: {ce}")
+                time.sleep(2)
             except Exception as e:
                 logging.error(f"Error processing payload: {e}")
                 time.sleep(1)
